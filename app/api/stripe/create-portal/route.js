@@ -1,23 +1,31 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/libs/auth";
-import connectMongo from "@/libs/mongoose";
+import { createClient } from "@/libs/supabase";
 import { createCustomerPortal } from "@/libs/stripe";
-import User from "@/models/User";
 
 export async function POST(req) {
   const session = await auth();
 
   if (session) {
     try {
-      await connectMongo();
+      const supabase = createClient();
 
       const body = await req.json();
 
       const { id } = session.user;
 
-      const user = await User.findById(id);
+      const { data: user, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', id)
+        .single();
 
-      if (!user?.customerId) {
+      if (error) {
+        console.error('Error fetching user:', error);
+        throw error;
+      }
+
+      if (!user?.customer_id) {
         return NextResponse.json(
           {
             error:
@@ -33,7 +41,7 @@ export async function POST(req) {
       }
 
       const stripePortalUrl = await createCustomerPortal({
-        customerId: user.customerId,
+        customerId: user.customer_id,
         returnUrl: body.returnUrl,
       });
 

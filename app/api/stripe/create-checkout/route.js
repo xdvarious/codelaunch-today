@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/libs/auth";
 import { createCheckout } from "@/libs/stripe";
-import connectMongo from "@/libs/mongoose";
-import User from "@/models/User";
+import { createClient } from "@/libs/supabase";
 
 // Creates a Stripe Checkout Session (for single payments or subscriptions)
 // Invoked by the <ButtonCheckout /> component
@@ -33,9 +32,24 @@ export async function POST(req) {
   try {
     const session = await auth();
 
-    await connectMongo();
+    const supabase = createClient();
 
-    const user = await User.findById(session?.user?.id);
+    let user = null;
+
+    if (session?.user?.id) {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', session.user.id)
+        .single();
+
+      if (error && error.code !== 'PGRST116') {
+        console.error('Error fetching user:', error);
+        throw error;
+      }
+
+      user = data;
+    }
 
     const { priceId, mode, successUrl, cancelUrl } = body;
 
@@ -45,7 +59,7 @@ export async function POST(req) {
       successUrl,
       cancelUrl,
       // For authenticated users, passes the user ID to the Stripe Session for webhook retrieval
-      clientReferenceId: user?._id?.toString(),
+      clientReferenceId: user?.id?.toString(),
       // For authenticated users, auto-fills Checkout information such as email and/or payment details for expedited checkout
       user,
       // Coupon codes sent from the frontend can be included here

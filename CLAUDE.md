@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CodeLaunch is a Next.js 15 SaaS boilerplate with Stripe payments, NextAuth authentication, MongoDB database, and modern UI components. It's designed for rapid SaaS development using the App Router architecture.
+CodeLaunch is a Next.js 15 SaaS boilerplate with Stripe payments, NextAuth authentication, Supabase database, and modern UI components. It's designed for rapid SaaS development using the App Router architecture.
 
 **Tech Stack:**
 - Next.js 15 (App Router) + React 19
 - NextAuth v5 (beta) with Google OAuth and Email providers
-- MongoDB with Mongoose ODM
+- Supabase (PostgreSQL) for database and auth
 - Stripe for payments (Checkout + Customer Portal)
 - Resend for transactional emails
 - Tailwind CSS v4 + DaisyUI components
@@ -47,20 +47,19 @@ npm run lint
   - `app/blog/` - Blog with dynamic routes and assets in `_assets/`
 - `components/` - Reusable UI components (Header, Footer, Pricing, etc.)
 - `libs/` - Core utilities and integrations
-- `models/` - Mongoose schemas with a `plugins/` subdirectory
 - `config.js` - Centralized app configuration
 - `middleware.js` - Edge-compatible NextAuth middleware
 
 ### Key Libraries
 
-**`libs/auth.js`** - NextAuth configuration with MongoDB adapter, Google, and Email providers. Exports `auth`, `signIn`, `signOut`, and `handlers`.
+**`libs/auth.js`** - NextAuth configuration with Supabase adapter, Google, and Email providers. Exports `auth`, `signIn`, `signOut`, and `handlers`.
+
+**`libs/supabase.js`** - Supabase client initialization for database operations. Exports both server-side and client-side Supabase clients.
 
 **`libs/stripe.js`** - Stripe helpers:
 - `createCheckout()` - Creates Stripe checkout sessions
 - `createCustomerPortal()` - Creates customer portal for subscription management
 - `findCheckoutSession()` - Retrieves checkout session details
-
-**`libs/mongoose.js`** - MongoDB connection via Mongoose. Call `connectMongo()` before database operations.
 
 **`libs/api.js`** - Axios client for frontend-to-API communication with:
 - Automatic error handling and toast notifications
@@ -74,11 +73,12 @@ npm run lint
 ### Authentication Flow
 
 - NextAuth v5 (beta) with JWT strategy for sessions
-- `middleware.js` runs edge-compatible auth (Google only, no Email/MongoDB)
-- `libs/auth.js` has full auth config with EmailProvider and MongoDBAdapter
+- `middleware.js` runs edge-compatible auth (Google only, no Email/Supabase)
+- `libs/auth.js` has full auth config with EmailProvider and SupabaseAdapter
 - Session available via `await auth()` in Server Components and API routes
 - User ID accessible as `session?.user?.id`
 - Protected routes redirect to `config.auth.loginUrl` ("/api/auth/signin")
+- Supabase handles user authentication tables (users, accounts, sessions, verification_tokens)
 
 ### Stripe Payment Flow
 
@@ -90,18 +90,21 @@ npm run lint
    - Sets `customerId`, `priceId`, and `hasAccess` fields
    - Handles events: `checkout.session.completed`, `invoice.paid`, `customer.subscription.deleted`, etc.
 
-### Database Models
+### Database Tables
 
-**User model** (`models/User.js`):
-- Standard fields: `name`, `email`, `image`
-- Stripe fields: `customerId`, `priceId`, `hasAccess` (boolean for access control)
-- Uses `toJSON` plugin for clean API responses
-- Timestamps enabled
+**Users table:**
+- Standard fields: `id` (UUID), `name`, `email`, `image`, `email_verified`, `created_at`, `updated_at`
+- Stripe fields: `customer_id`, `price_id`, `has_access` (boolean for access control)
+- Managed by NextAuth with additional Stripe-related columns
 
-**Lead model** (`models/Lead.js`):
+**Leads table:**
+- Fields: `id` (UUID), `email`, `created_at`
 - For lead capture functionality
 
-All schemas should use the `toJSON` plugin from `models/plugins/toJSON.js`.
+**NextAuth tables** (automatically managed by Supabase adapter):
+- `accounts` - OAuth account information
+- `sessions` - User session data
+- `verification_tokens` - Email verification tokens
 
 ### Configuration System
 
@@ -121,7 +124,7 @@ Standard API route structure:
 ```javascript
 import { NextResponse } from "next/server";
 import { auth } from "@/libs/auth";
-import connectMongo from "@/libs/mongoose";
+import { createClient } from "@/libs/supabase";
 
 export async function POST(req) {
   try {
@@ -135,8 +138,8 @@ export async function POST(req) {
       );
     }
 
-    // Connect to DB if needed
-    await connectMongo();
+    // Initialize Supabase client
+    const supabase = createClient();
 
     const body = await req.json();
 
@@ -148,7 +151,8 @@ export async function POST(req) {
       );
     }
 
-    // Business logic here
+    // Business logic here with Supabase
+    // Example: const { data, error } = await supabase.from('table').select();
 
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -173,7 +177,7 @@ export async function POST(req) {
 ### Middleware Behavior
 
 The middleware in `middleware.js` uses an edge-compatible NextAuth config:
-- Only includes GoogleProvider (no EmailProvider or MongoDB adapter due to edge limitations)
+- Only includes GoogleProvider (no EmailProvider or Supabase adapter due to edge limitations)
 - Uses JWT session strategy
 - Matches all routes except: `/api/*`, `/_next/static/*`, `/_next/image/*`, `/favicon.ico`
 - Custom middleware logic can be added inside the exported function
@@ -183,7 +187,9 @@ The middleware in `middleware.js` uses an edge-compatible NextAuth config:
 Required for full functionality:
 - `NEXTAUTH_SECRET` - Random secret for NextAuth
 - `NEXTAUTH_URL` - App URL (e.g., http://localhost:3000)
-- `MONGODB_URI` - MongoDB connection string
+- `NEXT_PUBLIC_SUPABASE_URL` - Supabase project URL
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` - Supabase anonymous key (public)
+- `SUPABASE_SERVICE_ROLE_KEY` - Supabase service role key (private, server-side only)
 - `STRIPE_PUBLIC_KEY` - Stripe publishable key
 - `STRIPE_SECRET_KEY` - Stripe secret key
 - `STRIPE_WEBHOOK_SECRET` - Stripe webhook signing secret
@@ -195,9 +201,10 @@ Required for full functionality:
 
 - **Components:** PascalCase (e.g., `ButtonCheckout`, `HeaderBlog`)
 - **API routes:** kebab-case directories with `route.js` files
-- **Utilities:** camelCase (e.g., `connectMongo`, `createCheckout`)
+- **Utilities:** camelCase (e.g., `createClient`, `createCheckout`)
 - **Constants:** UPPER_SNAKE_CASE
 - **Variables:** camelCase
+- **Database tables:** snake_case (e.g., `users`, `leads`, `verification_tokens`)
 
 ### Image Configuration
 
@@ -206,11 +213,6 @@ Remote image domains whitelisted in `next.config.js`:
 - `pbs.twimg.com` (Twitter avatars)
 - `images.unsplash.com` (Unsplash images)
 - `logos-world.net` (Logos)
-
-### Webpack Configuration
-
-The Next.js config ignores MongoDB optional dependencies to prevent build warnings:
-- `kerberos`, `@mongodb-js/zstd`, `@aws-sdk/credential-providers`, `gcp-metadata`, `snappy`, `socks`, `aws4`, `mongodb-client-encryption`
 
 ### Testing Stripe Webhooks Locally
 
@@ -224,16 +226,21 @@ Set the webhook signing secret in `.env.local` from the CLI output.
 ## Important Patterns
 
 ### Database Operations
-Always call `await connectMongo()` before Mongoose operations in API routes or server components.
+Use the Supabase client from `@/libs/supabase` for all database operations:
+```javascript
+const supabase = createClient();
+const { data, error } = await supabase.from('users').select('*').eq('id', userId).single();
+```
 
 ### Error Handling
 - Wrap async operations in try-catch blocks
 - Return appropriate HTTP status codes (400 for validation, 401 for auth, 403 for forbidden, 500 for server errors)
 - Log errors with `console.error()`
 - Provide user-friendly error messages
+- Check Supabase `error` object in responses: `if (error) throw error;`
 
 ### Access Control
-Check `user.hasAccess` field to determine if user has paid/subscribed and can access premium features.
+Check `user.has_access` field to determine if user has paid/subscribed and can access premium features.
 
 ### Client-side API Calls
 Use `apiClient` from `@/libs/api.js` for all frontend-to-backend API calls. It handles errors automatically with toast notifications and redirects on 401.

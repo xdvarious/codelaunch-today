@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import Stripe from "stripe";
-import connectMongo from "@/libs/mongoose";
+import { createClient } from "@/libs/supabase";
 import configFile from "@/config";
-import User from "@/models/User";
 import { findCheckoutSession } from "@/libs/stripe";
 
 // Initialize Stripe instance only when the secret key is present
@@ -21,7 +20,7 @@ export async function POST(req) {
     return NextResponse.json({ error: "Stripe configuration missing" }, { status: 500 });
   }
 
-  await connectMongo();
+  const supabase = createClient();
 
   const body = await req.text();
 
@@ -63,17 +62,51 @@ export async function POST(req) {
 
         // Retrieve or create the user. The userId is typically passed in the checkout session (clientReferenceID) to identify users during webhook events
         if (userId) {
-          user = await User.findById(userId);
+          const { data: userData, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('id', userId)
+            .single();
+
+          if (error && error.code !== 'PGRST116') {
+            console.error('Error fetching user:', error);
+            throw error;
+          }
+
+          user = userData;
         } else if (customer.email) {
-          user = await User.findOne({ email: customer.email });
+          const { data: userData, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('email', customer.email)
+            .single();
 
-          if (!user) {
-            user = await User.create({
-              email: customer.email,
-              name: customer.name,
-            });
+          if (error && error.code !== 'PGRST116') {
+            console.error('Error fetching user:', error);
+            throw error;
+          }
 
-            await user.save();
+          if (!userData) {
+            // Create new user
+            const { data: newUser, error: createError } = await supabase
+              .from('users')
+              .insert([
+                {
+                  email: customer.email,
+                  name: customer.name,
+                }
+              ])
+              .select()
+              .single();
+
+            if (createError) {
+              console.error('Error creating user:', createError);
+              throw createError;
+            }
+
+            user = newUser;
+          } else {
+            user = userData;
           }
         } else {
           console.error("No user found");
@@ -81,10 +114,19 @@ export async function POST(req) {
         }
 
         // Modify user data and grant product access. Stored as a boolean in the database, though it could represent credits or other metrics
-        user.priceId = priceId;
-        user.customerId = customerId;
-        user.hasAccess = true;
-        await user.save();
+        const { error: updateError } = await supabase
+          .from('users')
+          .update({
+            price_id: priceId,
+            customer_id: customerId,
+            has_access: true,
+          })
+          .eq('id', user.id);
+
+        if (updateError) {
+          console.error('Error updating user:', updateError);
+          throw updateError;
+        }
 
         // Optional: dispatch email with user link, product details, etc.
         // try {
@@ -116,11 +158,28 @@ export async function POST(req) {
         const subscription = await stripe.subscriptions.retrieve(
           data.object.id
         );
-        const user = await User.findOne({ customerId: subscription.customer });
+
+        const { data: user, error } = await supabase
+          .from('users')
+          .select('*')
+          .eq('customer_id', subscription.customer)
+          .single();
+
+        if (error) {
+          console.error('Error fetching user:', error);
+          throw error;
+        }
 
         // Remove product access
-        user.hasAccess = false;
-        await user.save();
+        const { error: updateError } = await supabase
+          .from('users')
+          .update({ has_access: false })
+          .eq('id', user.id);
+
+        if (updateError) {
+          console.error('Error updating user:', updateError);
+          throw updateError;
+        }
 
         break;
       }
@@ -131,14 +190,30 @@ export async function POST(req) {
         const priceId = data.object.lines.data[0].price.id;
         const customerId = data.object.customer;
 
-        const user = await User.findOne({ customerId });
+        const { data: user, error } = await supabase
+          .from('users')
+          .select('*')
+          .eq('customer_id', customerId)
+          .single();
+
+        if (error) {
+          console.error('Error fetching user:', error);
+          throw error;
+        }
 
         // Verify the invoice corresponds to the user's subscribed plan (priceId)
-        if (user.priceId !== priceId) break;
+        if (user.price_id !== priceId) break;
 
         // Authorize user access to your product. Represented as a boolean in the database, though could be credits or other values
-        user.hasAccess = true;
-        await user.save();
+        const { error: updateError } = await supabase
+          .from('users')
+          .update({ has_access: true })
+          .eq('id', user.id);
+
+        if (updateError) {
+          console.error('Error updating user:', updateError);
+          throw updateError;
+        }
 
         break;
       }
